@@ -1,19 +1,24 @@
 import { parse } from "node-html-parser";
 import type { GithubResponseJSON, ProjectData } from "../types";
 
-// TODO: Caching
-// const expireTime = 10 * 60 * 1000; // 10 minutes
-// let localCache: { [username: string]: { data: ProjectData[]; createdAt: number }[] } = {};
+const expireTime = 10 * 60 * 1000; // 10 minutes
+let localCache: { [username: string]: { data: ProjectData[]; createdAt: number } } = {};
+
+// Cache functions
+
+const isInCache = (username: string) => {
+	return Object.keys(localCache).includes(username);
+};
+
+const isExpired = (username: string) => {
+	const currentTimestamp = new Date().getTime();
+
+	return localCache[username].createdAt + expireTime < currentTimestamp;
+};
+
+// Main functions
 
 const fetchHTML = async (username: string) => {
-	// const currentTimestamp = new Date().getTime();
-
-	// if (Object.keys(localCache).includes(username)) {
-	// 	if (localCache[username]["createdAt"] + expireTime > currentTimestamp) {
-	// 		return localCache[username]["data"];
-	// 	}
-	// }
-
 	const response = await fetch(`https://github.com/${username}`);
 	if (!response.ok) return new Error("Request error");
 
@@ -21,10 +26,16 @@ const fetchHTML = async (username: string) => {
 };
 
 const fetchPinnedReposFromAPI = async (username: string, repos: string[]): Promise<ProjectData[] | Error> => {
+	if (repos.length === 0) return [];
+
+	if (isInCache(username)) {
+		if (!isExpired(username)) return localCache[username].data;
+
+		delete localCache[username];
+	}
+
 	const response = await fetch(`https://api.github.com/users/${username}/repos`, {
-		headers: {
-			"User-Agent": username,
-		},
+		headers: { "User-Agent": username },
 	});
 
 	if (!response.ok) return new Error("Request error");
@@ -48,6 +59,7 @@ const fetchPinnedReposFromAPI = async (username: string, repos: string[]): Promi
 		});
 	}
 
+	localCache[username] = { data: newData, createdAt: new Date().getTime() };
 	return newData;
 };
 
@@ -70,6 +82,8 @@ export default {
 		const pinned = getPinnedRepoNamesFromData(html);
 		const dataFromAPI = await fetchPinnedReposFromAPI(usernameParam, pinned);
 
-		return new Response(JSON.stringify(dataFromAPI));
+		return new Response(JSON.stringify(dataFromAPI), {
+			headers: { "Access-Control-Allow-Origin": "*" },
+		});
 	},
 } satisfies ExportedHandler<Env>;
