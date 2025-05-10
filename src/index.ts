@@ -1,48 +1,40 @@
 import { parse } from "node-html-parser";
-import type { GithubResponseJSON, ProjectData } from "../types";
+import type { GithubResponseJSON, ProjectData, UserData } from "../types";
 
-const expireTime = 10 * 60 * 1000; // 10 minutes
-let localCache: { [username: string]: { data: ProjectData[]; createdAt: number } } = {};
-
-// Cache functions
-
-const isInCache = (username: string) => {
-	return Object.keys(localCache).includes(username);
-};
-
-const isExpired = (username: string) => {
-	const currentTimestamp = new Date().getTime();
-
-	return localCache[username].createdAt + expireTime < currentTimestamp;
-};
-
-// Main functions
-
-const fetchHTML = async (username: string) => {
-	const response = await fetch(`https://github.com/${username}`);
-	if (!response.ok) return new Error("Request error");
+const fetchHTML = async (username: string): Promise<string> => {
+	const response = await fetch(`https://github.com/${username}`, {
+		headers: { "User-Agent": username },
+	});
 
 	return await response.text();
 };
 
-const fetchPinnedReposFromAPI = async (username: string, repos: string[]): Promise<ProjectData[] | Error> => {
-	if (repos.length === 0) return [];
-
-	if (isInCache(username)) {
-		if (!isExpired(username)) return localCache[username].data;
-
-		delete localCache[username];
-	}
-
-	const response = await fetch(`https://api.github.com/users/${username}/repos`, {
+const fetchUserRepoCount = async (username: string): Promise<number> => {
+	const userData = await fetch(`https://api.github.com/users/${username}`, {
 		headers: { "User-Agent": username },
 	});
+	const data = await userData.json();
 
-	if (!response.ok) return new Error("Request error");
-	const data = (await response.json()) as GithubResponseJSON;
+	return data["public_repos"];
+};
+
+const fetchPinnedReposFromAPI = async (username: string, repos: string[]): Promise<ProjectData[]> => {
+	if (repos.length === 0) return [];
+
+	const repoCount = await fetchUserRepoCount(username);
+	const fetchedRepositories = [];
+
+	for (let i = 1; i <= Math.ceil(repoCount / 30); i++) {
+		const response = await fetch(`https://api.github.com/users/${username}/repos?page=${i}`, {
+			headers: { "User-Agent": username },
+		});
+		const data = await response.json();
+
+		for (const project of data) fetchedRepositories.push(project);
+	}
 
 	const newData: ProjectData[] = [];
-	for (const project of data) {
+	for (const project of fetchedRepositories) {
 		if (!repos.includes(project.name)) continue;
 
 		newData.push({
@@ -59,7 +51,6 @@ const fetchPinnedReposFromAPI = async (username: string, repos: string[]): Promi
 		});
 	}
 
-	localCache[username] = { data: newData, createdAt: new Date().getTime() };
 	return newData;
 };
 
@@ -77,8 +68,6 @@ export default {
 		if (pathname !== "/get" || !usernameParam) return new Response("Incorrect request", { status: 502 });
 
 		const html = await fetchHTML(usernameParam);
-		if (html instanceof Error) return new Response("Request error");
-
 		const pinned = getPinnedRepoNamesFromData(html);
 		const dataFromAPI = await fetchPinnedReposFromAPI(usernameParam, pinned);
 
